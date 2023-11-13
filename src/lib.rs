@@ -15,9 +15,15 @@
 use async_std::task;
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as b64_std_engine, Engine};
-use influxdb::{
-    Client, ReadQuery as InfluxRQuery, Timestamp as InfluxTimestamp, WriteQuery as InfluxWQuery,
-};
+//use influxdb2 to access v2 api for influxdb
+use influxdb2::{Client, FromDataPoint};
+use influxdb2::models::Query;
+//use secrecy to manage secrets
+use secrecy;
+
+//renmove old library with partial support in favour of v2
+//use influxdb::{ Client, ReadQuery as InfluxRQuery, Timestamp as InfluxTimestamp, WriteQuery as InfluxWQuery };
+
 use log::{debug, error, warn};
 use serde::Deserialize;
 use std::convert::{TryFrom, TryInto};
@@ -42,10 +48,22 @@ use zenoh_util::{Timed, TimedEvent, TimedHandle, Timer};
 // Properies used by the Backend
 pub const PROP_BACKEND_URL: &str = "url";
 pub const PROP_BACKEND_USERNAME: &str = "username";
-pub const PROP_BACKEND_PASSWORD: &str = "password";
+pub const PROP_BACKEND_TOKEN: &str = "token";
+pub const PROP_BACKEND_PASSWORD: &str = PROP_BACKEND_TOKEN; //should use token here 
+//pub const PROP_BACKEND_PASSWORD: &str = "password"; //should use token here 
+
+pub const PROP_BACKEND_ORG_NAME: &str = "org";
+pub const PROP_BACKEND_ORG_ID: &str = "orgID";
+
+
 
 // Properies used by the Storage
-pub const PROP_STORAGE_DB: &str = "db";
+pub const PROP_STORAGE_BUCKET: &str = "bucket";
+pub const PROP_STORAGE_DB: &str = PROP_STORAGE_BUCKET;
+//pub const PROP_STORAGE_DB: &str = "db";
+
+
+
 pub const PROP_STORAGE_CREATE_DB: &str = "create_db";
 pub const PROP_STORAGE_ON_CLOSURE: &str = "on_closure";
 pub const PROP_STORAGE_USERNAME: &str = PROP_BACKEND_USERNAME;
@@ -125,41 +143,54 @@ pub fn create_volume(mut config: VolumeConfig) -> ZResult<Box<dyn Volume>> {
     };
 
     // The InfluxDB client used for administration purposes (show/create/drop databases)
-    let mut admin_client = Client::new(url, "");
+
+   let mut admin_client:Client;// = Client::new(url,PROP_BACKEND_ORG_ID,PROP_BACKEND_PASSWORD);
 
     // Note: remove username/password from properties to not re-expose them in admin_status
     let credentials = match (
         get_private_conf(&config.rest, PROP_BACKEND_USERNAME)?,
         get_private_conf(&config.rest, PROP_BACKEND_PASSWORD)?,
+        get_private_conf(&config.rest, PROP_BACKEND_ORG_ID)?,
+
     ) {
-        (Some(username), Some(password)) => {
-            admin_client = admin_client.with_auth(username, password);
-            Some((username.clone(), password.clone()))
+        (Some(username), Some(password), Some (org_id)) => {
+           // admin_client = admin_client.
+           admin_client = Client::new(url,org_id,password);
+            Some((username.clone(), password.clone(),org_id.clone()))
         }
-        (None, None) => None,
+        (None, None, None) => None,
         _ => {
             bail!(
-                "Optional properties `{}` and `{}` must coexist",
+                "Optional properties `{}` `{}` and `{}` must coexist",
                 PROP_BACKEND_USERNAME,
-                PROP_BACKEND_PASSWORD
+                PROP_BACKEND_PASSWORD,
+                PROP_BACKEND_ORG_ID,
             )
         }
+
+
     };
+        //added org_id in the v2 call
+
 
     // Check connectivity to InfluxDB, trying to list databases
+    /* 
     match async_std::task::block_on(async { show_databases(&admin_client).await }) {
         Ok(dbs) => {
             // trick: if "_internal" db is not shown, it means the credentials are not for an admin
+
+            //does this work for v2?
             if !dbs.iter().any(|e| e == "_internal") {
                 warn!("The InfluxDB credentials are not for an admin user; the volume won't be able to create or drop any database")
             }
         }
         Err(e) => bail!("Failed to create InfluxDb Volume : {}", e),
     }
+    */
 
     Ok(Box::new(InfluxDbBackend {
         admin_status: config,
-        admin_client,
+        admin_client,   
         credentials,
     }))
 }
@@ -167,7 +198,7 @@ pub fn create_volume(mut config: VolumeConfig) -> ZResult<Box<dyn Volume>> {
 pub struct InfluxDbBackend {
     admin_status: VolumeConfig,
     admin_client: Client,
-    credentials: Option<(String, String)>,
+    credentials: Option<(String, String, String)>,
 }
 
 #[async_trait]
@@ -215,16 +246,51 @@ impl Volume for InfluxDbBackend {
             _ => bail!(""),
         };
 
+
+
+    // The InfluxDB client used for administration purposes (show/create/drop databases)
+
+   let mut admin_client:Client;// = Client::new(url,PROP_BACKEND_ORG_ID,PROP_BACKEND_PASSWORD);
+   //create a new bucket
+
+   /* 
+   // Note: remove username/password from properties to not re-expose them in admin_status
+   let credentials = match (
+       get_private_conf(&config.rest, PROP_BACKEND_USERNAME)?,
+       get_private_conf(&config.rest, PROP_BACKEND_PASSWORD)?,
+       get_private_conf(&config.rest, PROP_BACKEND_ORG_ID)?,
+
+   ) {
+       (Some(username), Some(password), Some (org_id)) => {
+          // admin_client = admin_client.
+          admin_client = Client::new(self.admin_client,org_id,password);
+           Some((username.clone(), password.clone(),org_id.clone()))
+       }
+       (None, None, None) => None,
+       _ => {
+           bail!(
+               "Optional properties `{}` `{}` and `{}` must coexist",
+               PROP_BACKEND_USERNAME,
+               PROP_BACKEND_PASSWORD,
+               PROP_BACKEND_ORG_ID,
+           )
+       }
+       
+
+   }; */
+
         // The Influx client on database used to write/query on this storage
         // (using the same URL than backend's admin_client, but with storage credentials)
-        let mut client = Client::new(self.admin_client.database_url(), &db);
+       // let mut client : Client;//::new(self.admin_client.database_url(), &db);
 
         // Use credentials if specified in storage's volume config
         let storage_username = match (
             get_private_conf(volume_cfg, PROP_STORAGE_USERNAME)?,
             get_private_conf(volume_cfg, PROP_STORAGE_PASSWORD)?,
+            get_private_conf(volume_cfg, PROP_STORAGE_DB)?,
+
         ) {
-            (Some(username), Some(password)) => {
+            (Some(username), Some(password), Seom) => {
                 client = client.with_auth(username, password);
                 Some(username.clone())
             }
