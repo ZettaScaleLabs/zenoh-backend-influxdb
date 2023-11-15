@@ -1,3 +1,4 @@
+use chrono::NaiveDate;
 //
 // Copyright (c) 2022 ZettaScale Technology
 //
@@ -11,13 +12,20 @@
 // Contributors:
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
+use influxdb2::models::WriteDataPoint;
+//use bytes::BufMut;
+use futures::{Stream, StreamExt};
+use std::io::{self, Write};
 
-use async_std::task;
+
+//use crate::influxdb2::models::WriteDataPoint;
+use async_std::{task, stream};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as b64_std_engine, Engine};
+use influxdb2::api::buckets::ListBucketsRequest;
 //use influxdb2 to access v2 api for influxdb
 use influxdb2::{Client, FromDataPoint};
-use influxdb2::models::{Query, PostBucketRequest};
+use influxdb2::models::{Query, PostBucketRequest, DataPoint};
 //use secrecy to manage secrets
 use secrecy;
 
@@ -176,6 +184,9 @@ pub fn create_volume(mut config: VolumeConfig) -> ZResult<Box<dyn Volume>> {
      
      //check if the creds actually belong to an admin
      /* 
+    /// how??
+    ///do authorization check??
+    /// for now assume it is admin cred (ALL access token)
 
     match async_std::task::block_on(async {
         
@@ -183,8 +194,8 @@ pub fn create_volume(mut config: VolumeConfig) -> ZResult<Box<dyn Volume>> {
 
         }) {
         Ok(allowed) => {
-            //onboarding is allowed
-            //what to do now????
+            ///onboarding is allowed
+            ///what to do now????
         }
         Err(e) => bail!("Not admin creds. Failed to create InfluxDb Volume : {}", e),
     }
@@ -219,7 +230,7 @@ impl Volume for InfluxDbBackend {
         }
     }
 
-    //using old bucket or creating a new one
+    //for accessing the old bucket or creating a new one, call this from admin_client
     async fn create_storage(&mut self, mut config: StorageConfig) -> ZResult<Box<dyn Storage>> {
 
 
@@ -227,6 +238,8 @@ impl Volume for InfluxDbBackend {
             Some(v) => v,
             None => bail!("influxdb backed storages need some volume-specific configuration"),
         };
+
+        //bechaviour on closure
         let on_closure = match volume_cfg.get(PROP_STORAGE_ON_CLOSURE) {
             Some(serde_json::Value::String(x)) if x == "drop_series" => OnClosure::DropSeries,
             Some(serde_json::Value::String(x)) if x == "drop_db" => OnClosure::DropDb,
@@ -241,8 +254,7 @@ impl Volume for InfluxDbBackend {
             }
         };
 
-        //get db/bucket name if available, else create one if allowed in config else bail
-
+        //get db/bucket name if available, else create one if allowed in config else bail (00,01,10,11) (bail,create,create,create)
         let (db, createdb) = match volume_cfg.get(PROP_STORAGE_DB) {
             Some(serde_json::Value::String(s)) => (
                 s.clone(),
@@ -256,42 +268,49 @@ impl Volume for InfluxDbBackend {
             _ => bail!(""),
         };
 
-
-
         // The InfluxDB client used for administration purposes (show/create/drop databases)
-
-        //try to create a new bucket
         /*
-            1. create using storage username, password values
-            2. create using admin values if 1 fails ??
-            3. bail if both values unavaiable or if it fails
+            1. check if db exists
+                a. if it does, check if storage token values have access to it
+                b. if it doesn't then create it
+            2. create using admin values if 1 fails ?? in this case, admin id/psswd will be used for query etc
+            3. bail if both values unavaiable or if it fails to create
         */
+
+        /*
+        for now, check if db exists, if it doesnt, create a new one and use admin creds
+         */
+        //check if db exists, if yes, then check if token has access to it, if not, access via admin?
+        let url = match volume_cfg.get(PROP_BACKEND_URL) {
+            Some(serde_json::Value::String(url)) => url.clone(),
+            _ => {
+                bail!(
+                    "Mandatory property `{}` for InfluxDb Backend must be a string",
+                    PROP_BACKEND_URL
+                )
+            }
+        };
+
         let client : Client;
-        let _result = self.admin_client
-        .create_bucket(Some(PostBucketRequest::new(org_id, bucket)))
-        .await?;
-  
         // The Influx client on database used to write/query on this storage
         // (using the same URL than backend's admin_client, but with storage credentials)
        // let mut client : Client;//::new(self.admin_client.database_url(), &db);
 
-        // Use credentials if specified in storage's volume config
-        let storage_username = match (
-            get_private_conf(volume_cfg, PROP_STORAGE_USERNAME)?,
-            get_private_conf(volume_cfg, PROP_STORAGE_PASSWORD)?,
-            get_private_conf(volume_cfg, PROP_STORAGE_DB)?,
+        // get user credentials if specified in storage config
+        let storage_creds = match (
             get_private_conf(volume_cfg, PROP_BACKEND_ORG_ID)?,
-
+            get_private_conf(volume_cfg, PROP_STORAGE_DB)?,
+            get_private_conf(volume_cfg, PROP_STORAGE_PASSWORD)?,
+            get_private_conf(volume_cfg, PROP_STORAGE_USERNAME)?,
 
         ) {
-            (Some(username), Some(password), Some(bucket), Some(org_id)) => {
+            (  Some(org_id), Some(bucket), Some(password), Some(username),) => {
 
-               // client = Client::new(self.admin_client.url,org_id,password);
-                let _result = client
-                .create_bucket(Some(PostBucketRequest::new(org_id, bucket)))
-                .await?;
+                client = Client::new(url,org_id,password);
+                Some((org_id,bucket,password,username))
+               
             }
-            (None, None) => None,
+            (None, None,None,None) => None,
             _ => {
                 bail!(
                     "Optional properties `{}` and `{}` must coexist",
@@ -301,11 +320,18 @@ impl Volume for InfluxDbBackend {
             }
         };
 
-        // Check if the database exists (using storages credentials)
+        // Check if the database exists (using storages credentials) else create new one using admin creds
+        //storage creds are not used if a DB is created here, since tokens need to be issued for access
         if !is_db_existing(&client, &db).await? {
+
+            //if not, then create a new one
             if createdb {
+                let store_creds = storage_creds.unwrap();
                 // create db using backend's credentials
-                create_db(&self.admin_client, &db, storage_username).await?;
+                let _result = self.admin_client
+                .create_bucket(Some(PostBucketRequest::new(store_creds.0.to_string(), db)))
+                .await?;
+                client = self.admin_client;
             } else {
                 bail!("Database '{}' doesn't exist in InfluxDb", db)
             }
@@ -319,11 +345,9 @@ impl Volume for InfluxDbBackend {
             .entry(PROP_STORAGE_DB)
             .or_insert(db.clone().into());
 
+        
         // The Influx client on database with backend's credentials (admin), to drop measurements and database
-        let mut admin_client = Client::new(self.admin_client.database_url(), db);
-        if let Some((username, password)) = &self.credentials {
-            admin_client = admin_client.with_auth(username, password);
-        }
+        let mut admin_client = self.admin_client;
 
         Ok(Box::new(InfluxDbStorage {
             config,
@@ -482,18 +506,35 @@ impl Storage for InfluxDbStorage {
         // Note: tags are stored as strings in InfluxDB, while fileds are typed.
         // For simpler/faster deserialization, we store encoding, timestamp and base64 as fields.
         // while the kind is stored as a tag to be indexed by InfluxDB and have faster queries on it.
-        let query = InfluxWQuery::new(
-            InfluxTimestamp::Nanoseconds(influx_time),
-            measurement.clone(),
-        )
-        .add_tag("kind", "PUT")
-        .add_field("timestamp", timestamp.to_string())
-        .add_field("encoding_prefix", u8::from(*value.encoding.prefix()))
-        .add_field("encoding_suffix", value.encoding.suffix())
-        .add_field("base64", base64)
-        .add_field("value", strvalue);
+
+        let point = 
+            DataPoint::builder(measurement)
+                .tag("kind", "PUT")
+                .field("encoding_prefix", u8::from(*value.encoding.prefix()).to_string()) //check this later
+                .field("encoding_suffix", value.encoding.suffix())
+                .field("base64", base64)
+                .field("value", strvalue)
+                .timestamp(1671095854)
+                .build()
+                .unwrap();
+        
+        let query = vec![point];
+
+        // If the requests made are incorrect, Mockito returns status 501 and `write`
+        // will return an error, which causes the test to fail here instead of
+        // when we assert on mock_server. The error messages that Mockito
+        // provides are much clearer for explaining why a test failed than just
+        // that the server returned 501, so don't use `?` here.
+
         debug!("Put {:?} with Influx query: {:?}", measurement, query);
-        if let Err(e) = self.client.query(&query).await {
+        let db_name = match self.config.volume_cfg.get(PROP_STORAGE_BUCKET){
+            Some(val)=> val,
+            None => 
+                bail!(
+                    "db not found"
+                ),
+            };
+        if let Err(e) = self.client.write(&db_name.to_string(),stream::iter(query)).await {
             bail!(
                 "Failed to put Value for {:?} in InfluxDb storage : {}",
                 measurement,
@@ -512,10 +553,26 @@ impl Storage for InfluxDbStorage {
         let measurement = key.unwrap_or_else(|| OwnedKeyExpr::from_str(NONE_KEY).unwrap());
 
         // Note: assume that uhlc timestamp was generated by a clock using UNIX_EPOCH (that's the case by default)
-        let influx_time = timestamp.get_time().to_duration().as_nanos();
+        let current_time = timestamp.get_time().to_duration().as_nanos();
 
         // delete all points from the measurement that are older than this DELETE message
         // (in case more recent PUT have been recevived un-ordered)
+        let start = NaiveDate::from_timestamp_opt;
+        // from_ymd(2020, 1, 1).and_hms(0, 0, 0);
+        let stop = NaiveDate::from_ymd(2021, 1, 1).and_hms(0, 0, 0);
+        let db_name = match self.config.volume_cfg.get(PROP_STORAGE_BUCKET){
+            Some(val)=> val,
+            None => 
+                bail!(
+                    "db not found"
+                ),
+            };
+        let predicate = Some("_measurement=\"measurement\"".to_owned());
+
+        let _result = self.client.delete(&db_name.to_string(), timestamp, current_time, predicate).await;
+
+
+
         let query = InfluxRQuery::new(format!(
             r#"DELETE FROM "{}" WHERE time < {}"#,
             measurement, influx_time
@@ -844,6 +901,7 @@ fn generate_db_name() -> String {
     format!("zenoh_db_{}", Uuid::new_v4().simple())
 }
 
+/* 
 async fn show_databases(client: &Client) -> ZResult<Vec<String>> {
     #[derive(Deserialize)]
     struct Database {
@@ -870,12 +928,30 @@ async fn show_databases(client: &Client) -> ZResult<Vec<String>> {
         Err(e) => bail!("Failed to list existing InfluxDb databases : {}", e),
     }
 }
-
+*/
 async fn is_db_existing(client: &Client, db_name: &str) -> ZResult<bool> {
-    let dbs = show_databases(client).await?;
-    Ok(dbs.iter().any(|e| e == db_name))
+
+    //how to check for existing db??
+
+  //  let dbs = listbucketsshow_databases(client).await?;
+    let dbs = client.list_buckets(None).await;
+
+    //let limit = 1;
+        let bucket = db_name.to_string();
+
+
+        let request = ListBucketsRequest {
+            name: Some(bucket),
+            ..ListBucketsRequest::default()
+        };
+
+        let dbs = client.list_buckets(Some(request)).await?.buckets;
+    Ok(dbs.iter().any(|e| e.name == db_name.to_string()))
+   //Ok(false)
 }
 
+
+/* 
 async fn create_db(
     client: &Client,
     db_name: &str,
@@ -909,6 +985,8 @@ async fn create_db(
     }
     Ok(())
 }
+*/
+
 
 // Returns an InfluxDB regex (see https://docs.influxdata.com/influxdb/v1.8/query_language/explore-data/#regular-expressions)
 // corresponding to the list of path expressions. I.e.:
