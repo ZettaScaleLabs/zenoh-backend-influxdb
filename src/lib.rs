@@ -286,7 +286,7 @@ impl Volume for InfluxDbBackend {
         ) {
             (Some(username), Some(password), Some(bucket), Some(org_id)) => {
 
-                client = Client::new(self.admin_client.url,org_id,password);
+               // client = Client::new(self.admin_client.url,org_id,password);
                 let _result = client
                 .create_bucket(Some(PostBucketRequest::new(org_id, bucket)))
                 .await?;
