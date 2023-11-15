@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as b64_std_engine, Engine};
 //use influxdb2 to access v2 api for influxdb
 use influxdb2::{Client, FromDataPoint};
-use influxdb2::models::Query;
+use influxdb2::models::{Query, PostBucketRequest};
 //use secrecy to manage secrets
 use secrecy;
 
@@ -132,6 +132,8 @@ pub fn create_volume(mut config: VolumeConfig) -> ZResult<Box<dyn Volume>> {
         .rest
         .insert("version".into(), LONG_VERSION.clone().into());
 
+    //get url from config file to build client
+
     let url = match config.rest.get(PROP_BACKEND_URL) {
         Some(serde_json::Value::String(url)) => url.clone(),
         _ => {
@@ -144,14 +146,17 @@ pub fn create_volume(mut config: VolumeConfig) -> ZResult<Box<dyn Volume>> {
 
     // The InfluxDB client used for administration purposes (show/create/drop databases)
 
-   let mut admin_client:Client;// = Client::new(url,PROP_BACKEND_ORG_ID,PROP_BACKEND_PASSWORD);
+   let mut admin_client:Client= Client::new(url,"org_id","password");
 
-    // Note: remove username/password from properties to not re-expose them in admin_status
+
+    //get credentials for the admin client (ALL ACCESS TOKEN) if they have been procided
+
+    // Note: remove private info from properties to not re-expose them in admin_status
     let credentials = match (
         get_private_conf(&config.rest, PROP_BACKEND_USERNAME)?,
         get_private_conf(&config.rest, PROP_BACKEND_PASSWORD)?,
         get_private_conf(&config.rest, PROP_BACKEND_ORG_ID)?,
-
+        //get_private_conf(&config.rest, PROP_STORAGE_BUCKET)?,
     ) {
         (Some(username), Some(password), Some (org_id)) => {
            // admin_client = admin_client.
@@ -167,27 +172,26 @@ pub fn create_volume(mut config: VolumeConfig) -> ZResult<Box<dyn Volume>> {
                 PROP_BACKEND_ORG_ID,
             )
         }
-
-
     };
-        //added org_id in the v2 call
+     
+     //check if the creds actually belong to an admin
+     /* 
 
+    match async_std::task::block_on(async {
+        
+        admin_client.is_onboarding_allowed().await
 
-    // Check connectivity to InfluxDB, trying to list databases
-    /* 
-    match async_std::task::block_on(async { show_databases(&admin_client).await }) {
-        Ok(dbs) => {
-            // trick: if "_internal" db is not shown, it means the credentials are not for an admin
-
-            //does this work for v2?
-            if !dbs.iter().any(|e| e == "_internal") {
-                warn!("The InfluxDB credentials are not for an admin user; the volume won't be able to create or drop any database")
-            }
+        }) {
+        Ok(allowed) => {
+            //onboarding is allowed
+            //what to do now????
         }
-        Err(e) => bail!("Failed to create InfluxDb Volume : {}", e),
+        Err(e) => bail!("Not admin creds. Failed to create InfluxDb Volume : {}", e),
     }
-    */
 
+    */
+    
+    //if everything checks out, create the struct for the backend. This can be used to create buckets now.
     Ok(Box::new(InfluxDbBackend {
         admin_status: config,
         admin_client,   
@@ -215,7 +219,10 @@ impl Volume for InfluxDbBackend {
         }
     }
 
+    //using old bucket or creating a new one
     async fn create_storage(&mut self, mut config: StorageConfig) -> ZResult<Box<dyn Storage>> {
+
+
         let volume_cfg = match config.volume_cfg.as_object() {
             Some(v) => v,
             None => bail!("influxdb backed storages need some volume-specific configuration"),
@@ -233,6 +240,9 @@ impl Volume for InfluxDbBackend {
                 )
             }
         };
+
+        //get db/bucket name if available, else create one if allowed in config else bail
+
         let (db, createdb) = match volume_cfg.get(PROP_STORAGE_DB) {
             Some(serde_json::Value::String(s)) => (
                 s.clone(),
@@ -248,37 +258,19 @@ impl Volume for InfluxDbBackend {
 
 
 
-    // The InfluxDB client used for administration purposes (show/create/drop databases)
+        // The InfluxDB client used for administration purposes (show/create/drop databases)
 
-   let mut admin_client:Client;// = Client::new(url,PROP_BACKEND_ORG_ID,PROP_BACKEND_PASSWORD);
-   //create a new bucket
-
-   /* 
-   // Note: remove username/password from properties to not re-expose them in admin_status
-   let credentials = match (
-       get_private_conf(&config.rest, PROP_BACKEND_USERNAME)?,
-       get_private_conf(&config.rest, PROP_BACKEND_PASSWORD)?,
-       get_private_conf(&config.rest, PROP_BACKEND_ORG_ID)?,
-
-   ) {
-       (Some(username), Some(password), Some (org_id)) => {
-          // admin_client = admin_client.
-          admin_client = Client::new(self.admin_client,org_id,password);
-           Some((username.clone(), password.clone(),org_id.clone()))
-       }
-       (None, None, None) => None,
-       _ => {
-           bail!(
-               "Optional properties `{}` `{}` and `{}` must coexist",
-               PROP_BACKEND_USERNAME,
-               PROP_BACKEND_PASSWORD,
-               PROP_BACKEND_ORG_ID,
-           )
-       }
-       
-
-   }; */
-
+        //try to create a new bucket
+        /*
+            1. create using storage username, password values
+            2. create using admin values if 1 fails ??
+            3. bail if both values unavaiable or if it fails
+        */
+        let client : Client;
+        let _result = self.admin_client
+        .create_bucket(Some(PostBucketRequest::new(org_id, bucket)))
+        .await?;
+  
         // The Influx client on database used to write/query on this storage
         // (using the same URL than backend's admin_client, but with storage credentials)
        // let mut client : Client;//::new(self.admin_client.database_url(), &db);
@@ -288,11 +280,16 @@ impl Volume for InfluxDbBackend {
             get_private_conf(volume_cfg, PROP_STORAGE_USERNAME)?,
             get_private_conf(volume_cfg, PROP_STORAGE_PASSWORD)?,
             get_private_conf(volume_cfg, PROP_STORAGE_DB)?,
+            get_private_conf(volume_cfg, PROP_BACKEND_ORG_ID)?,
+
 
         ) {
-            (Some(username), Some(password), Seom) => {
-                client = client.with_auth(username, password);
-                Some(username.clone())
+            (Some(username), Some(password), Some(bucket), Some(org_id)) => {
+
+                client = Client::new(self.admin_client.url,org_id,password);
+                let _result = client
+                .create_bucket(Some(PostBucketRequest::new(org_id, bucket)))
+                .await?;
             }
             (None, None) => None,
             _ => {
@@ -336,6 +333,8 @@ impl Volume for InfluxDbBackend {
             timer: Timer::default(),
         }))
     }
+
+
 
     fn incoming_data_interceptor(&self) -> Option<Arc<dyn Fn(Sample) -> Sample + Send + Sync>> {
         None
