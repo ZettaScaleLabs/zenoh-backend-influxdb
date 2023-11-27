@@ -42,7 +42,28 @@ base64 = "0.21.0"
 env_logger = "0.10.0"
 git-version = "0.3.5"
 humantime = "2.1.0"
-influxdb = { version = "0.7.1", default-features = false, features = ["derive", "use-serde", "h1-client-rustls"] }
+#influxdb = { version = "0.7.1", default-features = false, features = ["derive", "use-serde", "h1-client-rustls"] }
+
+rand = "0.8.5"
+futures = "0.3.28"
+influxdb = { version = "0.7.1", features = ["derive"] }
+influxdb2 = "0.4.4"
+#influxdb2 = "0.3"
+influxdb2-structmap = "0.2"
+num-traits = "0.2"
+influxdb2-derive = "0.1.1"
+#chrono = "0.4.31"
+chrono = { version = "0.4.31", features = ["serde"] }
+
+tokio = "1.33.0"
+
+
+
+# futures = "0.3.29"
+# influxdb2 = { version = "0.4.4", features = ["rustls"], default-features = false }
+# influxdb2-structmap = "0.2"
+# num-traits = "0.2"
+
 lazy_static = "1.4.0"
 log = "0.4.17"
 serde = { version = "1.0.154", features = ["derive"] }
