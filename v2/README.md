@@ -64,7 +64,7 @@ You can setup storages either at zenoh router startup via a configuration file, 
               private: {
                 // If needed: InfluxDB credentials, preferably ALL-ACCESS for databases creation and drop
                 //if not ALL-ACCESS the atleast with authorization to create/delete buckets
-                org_id: "organization ID"
+                org_id: "organization ID",
                 token: "admin access token"
               }
             }
@@ -90,7 +90,7 @@ You can setup storages either at zenoh router startup via a configuration file, 
                   //required 
                   // If needed: InfluxDB credentials, with read/write privileges for the database
                   //this will be the same as for admin
-                    org_id: "organization ID" 
+                    org_id: "organization ID",
                     //this is any token with either:
                     //a.) Read-Write access to the existing DB mentioned above in the config
                     //b.) Read-write access to ALL buckets in the organization so it can access the new bucket created by zenoh
