@@ -52,7 +52,6 @@ pub const PROP_TOKEN: &str = "token";
 
 // Properties used by the Storage
 pub const PROP_STORAGE_DB: &str = "db";
-pub const PROP_STORAGE_DB_ID: &str = "db_id";
 pub const PROP_STORAGE_CREATE_DB: &str = "create_db";
 pub const PROP_STORAGE_ON_CLOSURE: &str = "on_closure";
 

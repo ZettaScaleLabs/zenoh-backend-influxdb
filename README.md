@@ -60,7 +60,7 @@ You can setup storages either at zenoh router startup via a configuration file, 
               // URL to the InfluxDB service
               url: "http://localhost:8086",
               private: {
-                // If needed: InfluxDB v1 credentials, preferably admin for databases creation and drop
+                // If needed: InfluxDB credentials, preferably admin for databases creation and drop
                 //username: "admin",
                 //password: "password"
                 // Required: InfluxDB v2 token, preferably admin for databases creation and drop
@@ -151,16 +151,8 @@ InfluxDB-backed volumes need some configuration to work:
 
 - **`"url"`** (**required**) : a URL to the InfluxDB service. Example: `http://localhost:8086`
 
-#### InfluxDB 1.8 or older:
-
-- **`"username"`** (optional) : an [InfluxDB admin](https://docs.influxdata.com/influxdb/v1.8/administration/authentication_and_authorization/#admin-users) user name. It will be used for creation of databases, granting read/write privileges of databases mapped to storages and dropping of databases and measurements.
-
-- **`"password"`** (optional) : the admin user's password.
-
-#### For InfluxDB 2.0 or newer:
-- **`"token"`** (required) : an [InfluxDB admin token](https://docs.influxdata.com/influxdb/v2/admin/tokens/). It will be used for creation of databases, granting read/write privileges of databases mapped to storages and dropping of databases and measurements.
-
-> `token`, `username` and `password` should be hidden behind a `private` gate, as shown in the example [above](#setup-via-a-json5-configuration-file). In general, if you wish for a part of the configuration to be hidden when configuration is queried, you should hide it behind a `private` gate.
+#### admin levelcredentials:
+check out the individual documentaions for v1 and v2
 
 -------------------------------
 ## Volume-specific storage configuration
@@ -176,11 +168,8 @@ Storages relying on a `influxdb` backed volume may have additional configuration
   - `"drop_db"`: the database is dropped (i.e. removed)
   - `"drop_series"`: all the series (measurements) are dropped and the database remains empty.
 
-- **`"username"`** (optional, string) : an InfluxDB v1 user name (usually [non-admin](https://docs.influxdata.com/influxdb/v1.8/administration/authentication_and_authorization/#non-admin-users)). It will be used to read/write points in the database on GET/PUT/DELETE zenoh operations.
-
-- **`"password"`** (optional, string) : an InfluxDB v1 user's password.
-
-- **`"token"`** (required, string) : an InfluxDB v2 token (usually [with limited privileges](https://docs.influxdata.com/influxdb/v2/admin/tokens/create-token/#create-a-token-using-the-influx-cli)). It will be used to read/write points in the database on GET/PUT/DELETE zenoh operations.
+### Volume-specific user credentials:
+  check out the individual documentaions for v1 and v2
 
 -------------------------------
 ## **Behaviour of the backend**
@@ -202,7 +191,8 @@ Each **key/value** put into the storage will map to an InfluxDB
 ### Behaviour on deletion
 On deletion of a key, all points with a timestamp before the deletion message are deleted.
 A point with `"kind"="DEL`" is inserted (to avoid re-insertion of points with an older timestamp in case of un-ordered messages).
-After a delay (5 seconds), the measurement corresponding to the deleted key is dropped if it still contains no points.
+In influxdb 1.x, after a delay (5 seconds), the measurement corresponding to the deleted key is dropped if it still contains no points.
+In influxdb 2.x, dropping measurement is not supported
 
 ### Behaviour on GET
 On GET operations, by default the storage returns only the latest point for each key/measurement.
@@ -284,7 +274,7 @@ And `zenohd` version corresponds to an un-released commit with id `1f20c86`. Upd
 $ cargo update -p zenoh --precise 1f20c86
 ```
 
-Then build the backend with:
+Then build the backend, choose which version you want to build (we are showing the example for v2):
 ```bash
-$ cargo build --release --all-targets
+$ cargo build --release -p zenoh-backend-influxdb_v2
 ```

@@ -29,7 +29,7 @@ Its library name (without OS specific prefix and extension) that zenoh will rely
 
 :point_right: **Build "master" branch:** see [below](#How-to-build-it)
 
-:warning: InfluxDB 2.x is not yet supported. InfluxDB 1.8 minimum is required.
+:note: This supports InfluxDB 2.x.
 
 -------------------------------
 ## :warning: Documentation for previous 0.5 versions:
@@ -150,11 +150,11 @@ InfluxDB-backed volumes need some configuration to work:
 
 - **`"url"`** (**required**) : a URL to the InfluxDB service. Example: `http://localhost:8086`
 
-- **`"username"`** (optional) : an [InfluxDB admin](https://docs.influxdata.com/influxdb/v1.8/administration/authentication_and_authorization/#admin-users) user name. It will be used for creation of databases, granting read/write privileges of databases mapped to storages and dropping of databases and measurements.
+- **`"org_id"`** (optional) : an [InfluxDB admin](https://docs.influxdata.com/influxdb/v1.8/administration/authentication_and_authorization/#admin-users) user name.
 
-- **`"password"`** (optional) : the admin user's password.
+- **`"token"`** (optional) : the admin user's token. It will be used for creation of databases, granting read/write privileges of databases mapped to storages and dropping of databases and measurements. In Influxdb2.x, you can use an ALL ACCESS token for this (https://docs.influxdata.com/influxdb/cloud/admin/tokens/#all-access-token)
 
-Both `username` and `password` should be hidden behind a `private` gate, as shown in the example [above](#setup-via-a-json5-configuration-file). In general, if you wish for a part of the configuration to be hidden when configuration is queried, you should hide it behind a `private` gate.
+Both `org_id` and `token` should be hidden behind a `private` gate, like the "username" and "password" shown in the example [above](#setup-via-a-json5-configuration-file). In general, if you wish for a part of the configuration to be hidden when configuration is queried, you should hide it behind a `private` gate.
 
 -------------------------------
 ## Volume-specific storage configuration
@@ -170,9 +170,9 @@ Storages relying on a `influxdb` backed volume may have additional configuration
   - `"drop_db"`: the database is dropped (i.e. removed)
   - `"drop_series"`: all the series (measurements) are dropped and the database remains empty.
 
-- **`"username"`** (optional, string) : an InfluxDB user name (usually [non-admin](https://docs.influxdata.com/influxdb/v1.8/administration/authentication_and_authorization/#non-admin-users)). It will be used to read/write points in the database on GET/PUT/DELETE zenoh operations.
+- **`"org_id"`** (optional, string) :the user's organization. It should be same as the admin's organization.
 
-- **`"password"`** (optional, string) : the user's password.
+- **`"token"`** (optional, string) :  an InfluxDB access token, usually [non-admin](https://docs.influxdata.com/influxdb/cloud/admin/tokens/#readwrite-token). It will be used to read/write points in the database on GET/PUT/DELETE zenoh operations.
 
 -------------------------------
 ## **Behaviour of the backend**
@@ -194,7 +194,7 @@ Each **key/value** put into the storage will map to an InfluxDB
 ### Behaviour on deletion
 On deletion of a key, all points with a timestamp before the deletion message are deleted.
 A point with `"kind"="DEL`" is inserted (to avoid re-insertion of points with an older timestamp in case of un-ordered messages).
-After a delay (5 seconds), the measurement corresponding to the deleted key is dropped if it still contains no points.
+In v1, zenoh used to drop the measurement corresponding to the deleted key is dropped if it still contains no points after 5secs. However, influxdb 2.x doesn't support this feature.
 
 ### Behaviour on GET
 On GET operations, by default the storage returns only the latest point for each key/measurement.
